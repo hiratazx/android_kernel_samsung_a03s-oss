@@ -27,6 +27,7 @@
 #include <linux/prefetch.h>
 
 #include <trace/events/block.h>
+#include <uapi/linux/sched/types.h>
 
 #include <linux/blk-mq.h>
 #include "blk.h"
@@ -36,6 +37,7 @@
 #include "blk-stat.h"
 #include "blk-mq-sched.h"
 #include "blk-rq-qos.h"
+#include "mtk_mmc_block.h"
 
 static bool blk_mq_poll(struct request_queue *q, blk_qc_t cookie);
 static void blk_mq_poll_stats_start(struct request_queue *q);
@@ -102,8 +104,28 @@ static void blk_mq_check_inflight(struct blk_mq_hw_ctx *hctx,
 	 */
 	if (rq->part == mi->part)
 		mi->inflight[0]++;
+
+	/* XXX We can safely remove this 'if condition-check' due to the
+	 * change in blk_mq_in_flight function. It will be called
+	 * only when * mi->part->partno is not 0.
+	 */
 	if (mi->part->partno)
 		mi->inflight[1]++;
+}
+
+static void blk_mq_check_disk_inflight(struct blk_mq_hw_ctx *hctx,
+				struct request *rq, void *priv,
+				bool reserved)
+{
+	struct mq_inflight *mi = priv;
+
+	/* This function is called only when mi->part is a whole disk. Then
+	 * we can add in_flight count only to index[0] without checking whether
+	 * the rq is for this mi->part or not. We don't care index[1], and
+	 * this behavior is totally consistent with the original behavior
+	 * of part_in_flight function.
+	 */
+	mi->inflight[0]++;
 }
 
 void blk_mq_in_flight(struct request_queue *q, struct hd_struct *part,
@@ -112,7 +134,10 @@ void blk_mq_in_flight(struct request_queue *q, struct hd_struct *part,
 	struct mq_inflight mi = { .part = part, .inflight = inflight, };
 
 	inflight[0] = inflight[1] = 0;
-	blk_mq_queue_tag_busy_iter(q, blk_mq_check_inflight, &mi);
+	if (mi.part->partno)
+		blk_mq_queue_tag_busy_iter(q, blk_mq_check_inflight, &mi);
+	else
+		blk_mq_queue_tag_busy_iter(q, blk_mq_check_disk_inflight, &mi);
 }
 
 static void blk_mq_check_inflight_rw(struct blk_mq_hw_ctx *hctx,
@@ -125,13 +150,26 @@ static void blk_mq_check_inflight_rw(struct blk_mq_hw_ctx *hctx,
 		mi->inflight[rq_data_dir(rq)]++;
 }
 
+static void blk_mq_check_disk_inflight_rw(struct blk_mq_hw_ctx *hctx,
+				struct request *rq, void *priv,
+				bool reserved)
+{
+	struct mq_inflight *mi = priv;
+
+	/* This function should be called only when mi->part is a whole disk */
+	mi->inflight[rq_data_dir(rq)]++;
+}
+
 void blk_mq_in_flight_rw(struct request_queue *q, struct hd_struct *part,
 			 unsigned int inflight[2])
 {
 	struct mq_inflight mi = { .part = part, .inflight = inflight, };
 
 	inflight[0] = inflight[1] = 0;
-	blk_mq_queue_tag_busy_iter(q, blk_mq_check_inflight_rw, &mi);
+	if (mi.part->partno)
+		blk_mq_queue_tag_busy_iter(q, blk_mq_check_inflight_rw, &mi);
+	else
+		blk_mq_queue_tag_busy_iter(q, blk_mq_check_disk_inflight_rw, &mi);
 }
 
 void blk_freeze_queue_start(struct request_queue *q)
@@ -1479,6 +1517,7 @@ EXPORT_SYMBOL(blk_mq_queue_stopped);
  */
 void blk_mq_stop_hw_queue(struct blk_mq_hw_ctx *hctx)
 {
+	mt_bio_queue_free(current);
 	cancel_delayed_work(&hctx->run_work);
 
 	set_bit(BLK_MQ_S_STOPPED, &hctx->state);
@@ -1545,6 +1584,7 @@ EXPORT_SYMBOL(blk_mq_start_stopped_hw_queues);
 static void blk_mq_run_work_fn(struct work_struct *work)
 {
 	struct blk_mq_hw_ctx *hctx;
+	struct sched_param scheduler_params = {0};
 
 	hctx = container_of(work, struct blk_mq_hw_ctx, run_work.work);
 
@@ -1553,6 +1593,10 @@ static void blk_mq_run_work_fn(struct work_struct *work)
 	 */
 	if (test_bit(BLK_MQ_S_STOPPED, &hctx->state))
 		return;
+
+	/* Set as RT priority */
+	scheduler_params.sched_priority = 1;
+	sched_setscheduler(current, SCHED_FIFO, &scheduler_params);
 
 	__blk_mq_run_hw_queue(hctx);
 }
@@ -2201,7 +2245,6 @@ static int blk_mq_init_hctx(struct request_queue *q,
 	node = hctx->numa_node;
 	if (node == NUMA_NO_NODE)
 		node = hctx->numa_node = set->numa_node;
-
 	INIT_DELAYED_WORK(&hctx->run_work, blk_mq_run_work_fn);
 	spin_lock_init(&hctx->lock);
 	INIT_LIST_HEAD(&hctx->dispatch);
