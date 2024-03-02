@@ -319,7 +319,8 @@ include scripts/subarch.include
 # Alternatively CROSS_COMPILE can be set in the environment.
 # Default value for CROSS_COMPILE is not to prefix executables
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
-ARCH		?= $(SUBARCH)
+ARCH            ?= arm64
+CROSS_COMPILE   ?= $(srctree)/toolchain/clang/host/linux-x86/clang-r383902/bin/aarch64-linux-gnu-
 
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
@@ -385,7 +386,7 @@ READELF		= llvm-readelf
 OBJSIZE		= llvm-size
 STRIP		= llvm-strip
 else
-CC		= $(CROSS_COMPILE)gcc
+CC		= $(srctree)/toolchain/clang/host/linux-x86/clang-r383902/bin/clang
 LD		= $(CROSS_COMPILE)ld
 AR		= $(CROSS_COMPILE)ar
 NM		= $(CROSS_COMPILE)nm
@@ -431,6 +432,7 @@ LINUXINCLUDE    := \
 		-I$(srctree)/arch/$(SRCARCH)/include \
 		-I$(objtree)/arch/$(SRCARCH)/include/generated \
 		$(if $(KBUILD_SRC), -I$(srctree)/include) \
+		-I$(srctree)/drivers/misc/mediatek/include \
 		-I$(objtree)/include \
 		$(USERINCLUDE)
 
@@ -965,6 +967,20 @@ KBUILD_CPPFLAGS += $(ARCH_CPPFLAGS) $(KCPPFLAGS)
 KBUILD_AFLAGS   += $(ARCH_AFLAGS)   $(KAFLAGS)
 KBUILD_CFLAGS   += $(ARCH_CFLAGS)   $(KCFLAGS)
 
+ifeq ($(HQ_D85_BUILD),true)
+KBUILD_CPPFLAGS += -DHQ_D85_BUILD
+KBUILD_CFLAGS   += -DHQ_D85_BUILD
+endif
+
+ifeq ($(FTY_TP_GESTURE),true)
+KBUILD_CPPFLAGS += -DFTY_TP_GESTURE
+KBUILD_CFLAGS   += -DFTY_TP_GESTURE
+endif
+
+ifeq ($(HQ_FACTORY_BUILD),true)
+KBUILD_CPPFLAGS += -DHQ_FACTORY_BUILD
+KBUILD_CFLAGS   += -DHQ_FACTORY_BUILD
+endif
 # Use --build-id when available.
 LDFLAGS_BUILD_ID := $(call ld-option, --build-id)
 KBUILD_LDFLAGS_MODULE += $(LDFLAGS_BUILD_ID)
